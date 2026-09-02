@@ -11,24 +11,20 @@ metadata:
 
 ## Overview
 
-Generate, derive, fund, and manage Injective wallets in bulk using self-contained Python and TypeScript routines.
+Generate, derive, fund, and manage Injective wallets in bulk. Based on proven patterns from an Injective RFQ test framework.
+
+## Core Implementation Patterns
+
+The routines below provide self-contained implementations for deterministic BIP-44 key derivation, random keypair generation, bidirectional `0x` <-> `inj1` address encoding, and mass subaccount management using standard Python and TypeScript libraries.
 
 ## Wallet Generation
 
 ### From Mnemonic (Deterministic, BIP-44)
-Derive any number of Injective-compatible wallets deterministically from a 12/24 word BIP-39 mnemonic seed phrase:
 ```python
-import bech32
 from eth_account import Account
-
 Account.enable_unaudited_hdwallet_features()
 
-def eth_to_inj_address(eth_address: str) -> str:
-    eth_bytes = bytes.fromhex(eth_address.removeprefix("0x"))
-    five_bit = bech32.convertbits(eth_bytes, 8, 5)
-    return bech32.bech32_encode("inj", five_bit)
-
-def generate_wallets_from_seed(seed_phrase: str, count: int, start_index: int = 0) -> list[dict]:
+def generate_wallets_from_seed(seed_phrase: str, count: int, start_index: int = 0):
     wallets = []
     for i in range(start_index, start_index + count):
         path = f"m/44'/60'/0'/0/{i}"
@@ -44,19 +40,11 @@ def generate_wallets_from_seed(seed_phrase: str, count: int, start_index: int = 
     return wallets
 ```
 
-### Random Keypair Generation
+### Random Wallets
 ```python
 import secrets
-from pyinjective.core.account import PrivateKey
-
-def create_random_wallet() -> dict:
-    raw_hex = secrets.token_hex(32)
-    pk = PrivateKey.from_hex(raw_hex)
-    return {
-        "private_key": raw_hex,
-        "inj_address": pk.to_address().to_acc_bech32(),
-        "eth_address": pk.to_address().to_hex(),
-    }
+key = secrets.token_hex(32)
+# Then use PrivateKey.from_hex(key) from pyinjective
 ```
 
 ### Address Conversion (ETH <-> INJ)
@@ -72,7 +60,6 @@ inj1:  ^inj1[02-9ac-hj-np-z]{38}$      (bech32 charset; no b/i/o/1)
 **Python** (standalone, no SDK):
 ```python
 import bech32
-
 def eth_to_inj_address(eth_address: str) -> str:
     eth_bytes = bytes.fromhex(eth_address.removeprefix("0x"))
     five_bit = bech32.convertbits(eth_bytes, 8, 5)
@@ -84,14 +71,14 @@ def inj_to_eth_address(inj_address: str) -> str:
     return "0x" + bytes(eight_bit).hex()
 ```
 
-**Node / TypeScript** (via `@injectivelabs/sdk-ts`):
+**Node / TypeScript** (via `@injectivelabs/sdk-ts`, preferred when the project already depends on it):
 ```ts
 import { getInjectiveAddress, getEthereumAddress } from '@injectivelabs/sdk-ts';
 
-// 0x -> inj1
-const inj = getInjectiveAddress('0xYourEthAddress...40hex');
-// inj1 -> 0x (lowercase)
-const eth = getEthereumAddress('inj1yourbech32address...');
+// 0x → inj1
+const inj = getInjectiveAddress('0xYourEthAddress…40hex');
+// inj1 → 0x (lowercase)
+const eth = getEthereumAddress('inj1yourbech32address…');
 ```
 
 **Accept-either pattern** (server accepting an external address):
@@ -101,46 +88,64 @@ const ETH_HEX    = /^0x[0-9a-fA-F]{40}$/;
 
 function normalize(raw: string) {
   const s = raw.trim();
-  if (INJ_BECH32.test(s)) return { inj: s, eth: getEthereumAddress(s).toLowerCase() };
-  if (ETH_HEX.test(s))    return { inj: getInjectiveAddress(s), eth: s.toLowerCase() };
-  throw new Error('malformed address - expected inj1 (43 chars) or 0x (42 chars)');
+  if (INJ_BECH32.test(s)) return { inj: s,                       eth: getEthereumAddress(s).toLowerCase() };
+  if (ETH_HEX.test(s))    return { inj: getInjectiveAddress(s),  eth: s.toLowerCase() };
+  throw new Error('malformed address — expected inj1… (43 chars) or 0x… (42 chars)');
 }
 ```
 
-## Mass Funding & Subaccounts
+The `PrivateKey.toBech32()` / `.toAddress()` methods on sdk-ts's `PrivateKey` return these two forms from a key directly — useful when you're generating + need both at once.
 
-### Send INJ to Many Wallets (Batched MsgSend)
+## Mass Funding
+
+### Send INJ to Many Wallets (batched MsgSend)
 Batch up to 200 `MsgSend` messages in a single transaction:
 ```python
-from decimal import Decimal
 from pyinjective.composer import Composer
+from pyinjective.transaction import Transaction
 
 msgs = []
 for wallet in wallets:
     msg = composer.msg_send(
         sender=funder_address,
         receiver=wallet["inj_address"],
-        amount=Decimal("1.0"),
+        amount=amount,
         denom="inj"
     )
     msgs.append(msg)
+# Submit all msgs in one tx
 ```
 
-### Subaccount ID Construction
-Construct the default subaccount (nonce = 0) for any Injective address:
+### Deposit to Exchange Subaccount
+After funding bank accounts, deposit to trading subaccounts:
 ```python
-def get_default_subaccount_id(eth_address: str) -> str:
-    return f"{eth_address.lower().removeprefix('0x').rjust(40, '0')}000000000000000000000000"
+from pyinjective.core.broadcaster import MsgBroadcasterWithPk
+
+msg = composer.msg_subaccount_deposit(
+    sender=address,
+    subaccount_id=get_subaccount_id(address, nonce=0),
+    amount=Decimal(str(amount)),
+    denom=denom
+)
 ```
+
+### Two-Step USDT Funding (testnet)
+1. Parent wallet sends USDT via bank `MsgSend` to child
+2. Child deposits USDT from bank to exchange subaccount
 
 ## Balance Checks
 ```python
-# Bank balance lookup
+# Bank balance
 balance = await client.fetch_bank_balance(address, denom)
 
-# Subaccount deposit lookup
+# Subaccount deposit
 deposits = await client.fetch_subaccount_deposits(subaccount_id)
 ```
+
+## Environment Config
+- Env var prefix pattern: `{ENV}_LOAD_TEST_MM_SEED_PHRASE`, `{ENV}_LOAD_TEST_RETAIL_SEED_PHRASE`
+- Or comma-separated key lists: `TESTNET_MM_KEYS=hex1,hex2,...`
+- YAML configs at `configs/{env}.yaml`
 
 ## Dependencies
 - `injective-py>=1.12.0`
