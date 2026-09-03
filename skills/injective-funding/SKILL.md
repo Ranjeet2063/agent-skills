@@ -26,13 +26,16 @@ from pyinjective.composer import Composer
 from pyinjective.transaction import Transaction
 
 MAX_MSGS_PER_TX = 200  # hard cap enforced by node gas limit
+MSGS_PER_WALLET = 2    # INJ + USDT (2 MsgSend messages per wallet)
+MAX_WALLETS = MAX_MSGS_PER_TX // MSGS_PER_WALLET  # 100 wallets max for 2-asset transfers
 
 composer = Composer(network=network.string())
 msgs = []
 
-if len(wallets) > MAX_MSGS_PER_TX:
+if len(wallets) * MSGS_PER_WALLET > MAX_MSGS_PER_TX:
     raise ValueError(
-        f"Batch too large: {len(wallets)} wallets exceeds the {MAX_MSGS_PER_TX}-message limit. "
+        f"Batch too large: {len(wallets)} wallets ({len(wallets) * MSGS_PER_WALLET} messages) "
+        f"exceeds the {MAX_MSGS_PER_TX}-message limit (max {MAX_WALLETS} wallets for 2 assets). "
         "Split into smaller chunks and broadcast separately."
     )
 
@@ -56,11 +59,9 @@ for wallet in wallets:
 tx = Transaction(msgs=msgs, ...)
 ```
 
-To process more than 200 wallets, split into chunks:
+To process more wallets, split into chunks of at most 100 wallets (200 messages):
 ```python
-import math
-
-CHUNK_SIZE = 100  # msgs per wallet × chunk = total msgs per tx
+CHUNK_SIZE = 100  # 100 wallets × 2 msgs/wallet = 200 msgs per tx
 for i in range(0, len(wallets), CHUNK_SIZE):
     chunk = wallets[i:i + CHUNK_SIZE]
     # build and broadcast each chunk independently
