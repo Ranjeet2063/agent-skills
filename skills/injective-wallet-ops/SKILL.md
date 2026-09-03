@@ -102,7 +102,7 @@ The `PrivateKey.toBech32()` / `.toAddress()` methods on sdk-ts's `PrivateKey` re
 Batch up to 200 `MsgSend` messages in a single transaction:
 ```python
 from pyinjective.composer import Composer
-from pyinjective.transaction import Transaction
+from pyinjective.core.broadcaster import MsgBroadcasterWithPk
 
 msgs = []
 for wallet in wallets:
@@ -113,7 +113,14 @@ for wallet in wallets:
         denom="inj"
     )
     msgs.append(msg)
-# Submit all msgs in one tx
+
+# Broadcast all msgs in one transaction
+broadcaster = MsgBroadcasterWithPk.new_using_simulation(
+    network=network,
+    private_key=private_key
+)
+result = await broadcaster.broadcast(msgs)
+print(f"Batch funded {len(msgs)} wallets in tx: {result.txhash}")
 ```
 
 ### Deposit to Exchange Subaccount
@@ -148,7 +155,15 @@ deposits = await client.fetch_subaccount_deposits(subaccount_id)
 - YAML configs at `configs/{env}.yaml`
 
 ## Dependencies
+
+**Python (wallet derivation, address conversion, mass funding):**
 - `injective-py>=1.12.0`
 - `eth-account>=0.11.0`
 - `bech32>=1.2.0`
 - Python >= 3.11
+
+**Node / TypeScript (address conversion helpers, when project already depends on sdk-ts):**
+- `@injectivelabs/sdk-ts` — `PrivateKey`, `getInjectiveAddress`, `getEthereumAddress`
+- `@injectivelabs/networks` — `Network.Testnet` / `Network.Mainnet`
+- Node >= 20
+

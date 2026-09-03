@@ -20,13 +20,21 @@ The routines below provide self-contained Python (`pyinjective`) and TypeScript 
 ## Batch Bank Transfers
 
 ### 200 Transfers in One Transaction
-Batch up to 200 `MsgSend` in a single transaction:
+Batch up to 200 `MsgSend` in a single transaction. **Enforce the limit** before broadcasting — the Injective node rejects transactions that exceed the gas cap for large batches:
 ```python
 from pyinjective.composer import Composer
 from pyinjective.transaction import Transaction
 
+MAX_MSGS_PER_TX = 200  # hard cap enforced by node gas limit
+
 composer = Composer(network=network.string())
 msgs = []
+
+if len(wallets) > MAX_MSGS_PER_TX:
+    raise ValueError(
+        f"Batch too large: {len(wallets)} wallets exceeds the {MAX_MSGS_PER_TX}-message limit. "
+        "Split into smaller chunks and broadcast separately."
+    )
 
 for wallet in wallets:
     # Send INJ
@@ -46,6 +54,16 @@ for wallet in wallets:
 
 # Build and broadcast single tx with all msgs
 tx = Transaction(msgs=msgs, ...)
+```
+
+To process more than 200 wallets, split into chunks:
+```python
+import math
+
+CHUNK_SIZE = 100  # msgs per wallet × chunk = total msgs per tx
+for i in range(0, len(wallets), CHUNK_SIZE):
+    chunk = wallets[i:i + CHUNK_SIZE]
+    # build and broadcast each chunk independently
 ```
 
 ### Quote-asset denoms by network
@@ -86,11 +104,26 @@ await broadcaster.broadcast([msg])
 ```
 
 ### Subaccount ID Calculation
+
+Canonicalize and validate at every construction site — strip `0x` prefix, require exactly 40 hex characters for the address part, and left-pad the nonce to 24 hex characters:
+
 ```python
+import re
+
+ETH_ADDR_RE = re.compile(r'^(?:0x)?([0-9a-fA-F]{40})$')
+
 def get_subaccount_id(inj_address: str, nonce: int = 0) -> str:
-    """Generate subaccount ID: eth_address + nonce (padded to 24 hex chars)"""
-    eth_addr = inj_to_eth_address(inj_address)
-    return eth_addr.lower() + format(nonce, '024x')
+    """Generate canonical subaccount ID: eth_address (lowercase, no 0x) + nonce (24 hex chars).
+    
+    All three construction sites (bank, subaccount deposit, and authz lookups) must use this
+    helper — never inline the concatenation — so that IDs are always in canonical form.
+    """
+    eth_raw = inj_to_eth_address(inj_address)  # returns '0x...' form
+    m = ETH_ADDR_RE.match(eth_raw)
+    if not m:
+        raise ValueError(f"Invalid ETH address derived from {inj_address!r}: {eth_raw!r}")
+    eth_hex = m.group(1).lower()               # strip 0x, lowercase, exactly 40 chars
+    return eth_hex + format(nonce, '024x')     # 40 + 24 = 64 hex chars total
 ```
 
 ## Two-Step USDT Funding (Testnet Pattern)
